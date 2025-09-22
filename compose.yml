@@ -2,8 +2,6 @@ services:
   Blend-A-Bot:
     image: ghcr.io/jake-schuler/Blend-A-Bot:latest
     container_name: Blend-A-Bot
-    ports:
-      - "8080:8080"
     restart: unless-stopped
     volumes:
       - ${PWD}/.env:/usr/src/app/.env
