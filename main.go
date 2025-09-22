@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"time"
@@ -46,6 +47,36 @@ type TBATeam struct {
 type TBAEvent struct {
 	Name     string `json:"name"`
 	EventKey string `json:"key"`
+}
+
+type StatboticsData struct {
+    Team       int    `json:"team"`
+    Year       int    `json:"year"`
+    RookieYear int    `json:"rookie_year"`
+    EPA        struct {
+        TotalPoints struct {
+            Mean float64 `json:"mean"`
+        } `json:"total_points"`
+        Ranks struct {
+            Total struct {
+                Rank       int     `json:"rank"`
+                Percentile float64 `json:"percentile"`
+            } `json:"total"`
+            Country struct {
+                Rank       int     `json:"rank"`
+                Percentile float64 `json:"percentile"`
+            } `json:"country"`
+            State struct {
+                Rank       int     `json:"rank"`
+                Percentile float64 `json:"percentile"`
+            } `json:"state"`
+        } `json:"ranks"`
+    } `json:"epa"`
+    Record struct {
+        Wins    int     `json:"wins"`
+        Losses  int     `json:"losses"`
+        Winrate float64 `json:"winrate"`
+    } `json:"record"`
 }
 
 var (
@@ -110,6 +141,28 @@ var (
 				},
 			},
 		},
+		{
+			Name:        "tryitandsee",
+			Description: "Try it and see what happens",
+		},
+		{
+			Name:        "sb",
+			Description: "Statbotics Info",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "teamnumber",
+					Description: "The number of the team",
+					Required:    true,
+					Type:        discordgo.ApplicationCommandOptionInteger,
+				},
+				{
+					Name:        "year",
+					Description: "The year to get data from",
+					Required:    true,
+					Type:        discordgo.ApplicationCommandOptionInteger,
+				},
+			},
+		},
 	}
 	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
 		"ping": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -127,7 +180,7 @@ var (
 			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
 				Data: &discordgo.InteractionResponseData{
-					Content: "https://letmegooglethat.com/?q=" + i.ApplicationCommandData().Options[0].StringValue(),
+					Content: "https://letmegooglethat.com/?q=" + url.QueryEscape(i.ApplicationCommandData().Options[0].StringValue()),
 				},
 			})
 			if err != nil {
@@ -165,6 +218,31 @@ var (
 			})
 			if err != nil {
 				log.Println("Error responding to HTTP cat command:", err)
+			}
+		},
+		"tryitandsee": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "https://tryitands.ee",
+				},
+			})
+			if err != nil {
+				log.Println("Error responding to tryitandsee command:", err)
+			}
+		},
+		"sb": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			teamNumber := int(i.ApplicationCommandData().Options[0].IntValue())
+			year := int(i.ApplicationCommandData().Options[1].IntValue())
+			content := getStatbotics(teamNumber, year)
+			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Embeds: []*discordgo.MessageEmbed{&content},
+				},
+			})
+			if err != nil {
+				log.Println("Error responding to SB command:", err)
 			}
 		},
 	}
@@ -361,5 +439,69 @@ func formatTBATeam(team TBATeam) discordgo.MessageEmbed {
 			URL: fmt.Sprintf("https://www.thebluealliance.com/avatar/%d/frc%d.png", time.Now().Year(), team.TeamNumber),
 		},
 		URL: fmt.Sprintf("https://www.thebluealliance.com/team/%d", team.TeamNumber),
+	}
+}
+
+func getStatbotics(teamNumber int, year int) discordgo.MessageEmbed {
+	var stats StatboticsData
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://api.statbotics.io/v3/team_year/%d/%d", teamNumber, year), nil)
+	if err != nil {
+		log.Println("Error creating Statbotics request:", err)
+		return discordgo.MessageEmbed{
+			Title:       "Error",
+			Description: "Error creating Statbotics request",
+		}
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println("Error fetching Statbotics data:", err)
+		return discordgo.MessageEmbed{
+			Title:       "Error",
+			Description: "Error fetching Statbotics data",
+		}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Println("Error reading Statbotics response body:", err)
+		return discordgo.MessageEmbed{
+			Title:       "Error",
+			Description: "Error reading Statbotics response body",
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error fetching Statbotics data: received status code %d, body: %s", resp.StatusCode, string(body))
+		return discordgo.MessageEmbed{
+			Title:       "Error",
+			Description: fmt.Sprintf("Error: received non-200 status code from Statbotics (%d)", resp.StatusCode),
+		}
+	}
+
+	if err := json.Unmarshal(body, &stats); err != nil {
+		log.Println("Error unmarshalling Statbotics response:", err)
+		return discordgo.MessageEmbed{
+			Title:       "Error",
+			Description: "Error parsing Statbotics response",
+		}
+	}
+
+	log.Println("Statbotics data fetched successfully:", stats)
+	return formatStatboticsData(stats)
+}
+
+func formatStatboticsData(stats StatboticsData) discordgo.MessageEmbed {
+	return discordgo.MessageEmbed{
+		Title: "Team " + fmt.Sprint(stats.Team) + "'s Stats - " + fmt.Sprint(stats.Year),
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "EPA", Value: fmt.Sprint(stats.EPA.TotalPoints.Mean), Inline: true},
+			{Name: "Win-Loss", Value: fmt.Sprintf("%d-%d", stats.Record.Wins, stats.Record.Losses), Inline: true},
+			{Name: "Worldwide Rank", Value: fmt.Sprint(stats.EPA.Ranks.Total.Rank), Inline: true},
+			{Name: "Country Rank", Value: fmt.Sprint(stats.EPA.Ranks.Country.Rank), Inline: true},
+			{Name: "State Rank", Value: fmt.Sprint(stats.EPA.Ranks.State.Rank), Inline: true},
+		},
 	}
 }
